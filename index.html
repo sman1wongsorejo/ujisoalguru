@@ -7,6 +7,12 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Lexend:wght@500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- KaTeX CSS & JS untuk Render Rumus & Matriks -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
   <style>
     body { font-family: 'Plus Jakarta Sans', sans-serif; }
     .cbt-table-wrap { width: 100%; overflow-x: auto; margin: 12px 0; border-radius: 12px; border: 1px solid #cbd5e1; background: #ffffff; }
@@ -18,6 +24,10 @@
     .cbt-table tr:nth-child(even) td { background: #f8fafc; }
     .cbt-code-block { background: #0f172a; color: #e2e8f0; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.55; padding: 14px 16px; border-radius: 12px; overflow-x: auto; margin: 12px 0; white-space: pre; }
     .cbt-inline-code { background: #f1f5f9; color: #be123c; font-family: 'Courier New', monospace; font-size: 13px; font-weight: 700; padding: 2px 6px; border-radius: 6px; border: 1px solid #e2e8f0; }
+
+    /* Penyesuaian tampilan KaTeX agar responsif di layar HP & Laptop */
+    .katex { font-size: 1.08em; }
+    .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
 
     .mode-abk { font-family: 'Lexend', sans-serif !important; background-color: #f7f4eb !important; }
     .mode-abk .sim-question { font-size: 1.15rem !important; line-height: 1.75 !important; letter-spacing: 0.02em; }
@@ -398,10 +408,23 @@
       document.getElementById('viewLogin').classList.remove('hidden');
     }
 
-    // PARSER KONTEN SOAL (IDENTIK DENGAN CBT SISWA)
+    // PARSER KONTEN SOAL + AUTO-MATRIKS LATEX (IDENTIK DENGAN CBT SISWA)
     function escapeHtmlChars(str) {
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     }
+
+    function konversiMatriksKeLatex(teks) {
+      if (!teks) return "";
+      // Mengubah pola [([baris 1]; [baris 2])] menjadi LaTeX bmatrix dengan pembatas \( ... \) agar aman dari simbol $
+      return teks.replace(/\[\(\[(.*?)\]\)\]/g, function(match, isiMatriks) {
+        const baris = isiMatriks.split(/\]\s*;\s*\[/);
+        const latexRows = baris.map(b => {
+          return b.split(',').map(elemen => elemen.trim()).join(' & ');
+        });
+        return `\\(\\begin{bmatrix} ${latexRows.join(' \\\\ ')} \\end{bmatrix}\\)`;
+      });
+    }
+
     function lindungiTagKodeInline(teks) {
       let hasil = teks.replace(/`([^`]+)`/g, (_, isi) => `<code class="cbt-inline-code">${escapeHtmlChars(isi)}</code>`);
       hasil = hasil.replace(/<\/?([a-zA-Z][a-zA-Z0-9-]*)(\s[^<>]*)?>/g, (full, tag) => {
@@ -409,14 +432,33 @@
       });
       return hasil;
     }
+
     function formatKontenSoal(teksMentah, izinkanTabel = true) {
       if (!teksMentah) return "";
       let teks = teksMentah.toString().replace(/\r\n/g, '\n');
+
+      // 1. Proteksi blok kode ``` ... ```
       const codePlaceholders = [];
       teks = teks.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (_, l, isi) => {
         codePlaceholders.push(`<pre class="cbt-code-block"><code>${escapeHtmlChars(isi.trim())}</code></pre>`);
         return `__CBT_CODE_${codePlaceholders.length - 1}__`;
       });
+
+      // 2. Konversi otomatis pola matriks [([ ... ])] ke LaTeX
+      teks = konversiMatriksKeLatex(teks);
+
+      // 3. Proteksi blok rumus LaTeX ($$...$$ dan \(...\)) agar karakter < atau > tidak rusak
+      const mathPlaceholders = [];
+      teks = teks.replace(/\$\$([\s\S]*?)\$\$/g, (matchMath) => {
+        mathPlaceholders.push(matchMath);
+        return `__CBT_MATH_${mathPlaceholders.length - 1}__`;
+      });
+      teks = teks.replace(/\\\(([\s\S]*?)\\\)/g, (matchMath) => {
+        mathPlaceholders.push(matchMath);
+        return `__CBT_MATH_${mathPlaceholders.length - 1}__`;
+      });
+
+      // 4. Proteksi tabel HTML bawaan
       const htmlTablePlaceholders = [];
       if (izinkanTabel) {
         teks = teks.replace(/<table[\s\S]*?<\/table>/gi, (matchTable) => {
@@ -425,6 +467,8 @@
           return `__CBT_HTML_TBL_${htmlTablePlaceholders.length - 1}__`;
         });
       }
+
+      // 5. Parsing tabel Markdown
       const baris = teks.split('\n');
       let hasil = []; let inTbl = false;
       baris.forEach(b => {
@@ -445,9 +489,24 @@
       });
       if (inTbl) hasil.push('</tbody></table></div>');
       let out = hasil.join('<br>').replace(/<\/div><br>/g, '</div>').replace(/<br><div class="cbt-table-wrap">/g, '<div class="cbt-table-wrap">');
+
       codePlaceholders.forEach((blk, idx) => { out = out.replace(`__CBT_CODE_${idx}__`, blk); });
       htmlTablePlaceholders.forEach((tbl, idx) => { out = out.replace(`__CBT_HTML_TBL_${idx}__`, tbl); });
+      mathPlaceholders.forEach((mathStr, idx) => { out = out.replace(`__CBT_MATH_${idx}__`, mathStr); });
       return out;
+    }
+
+    function renderRumusKaTeX(targetElement) {
+      if (!targetElement) return;
+      if (typeof renderMathInElement === "function") {
+        renderMathInElement(targetElement, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "\\(", right: "\\)", display: false }
+          ],
+          throwOnError: false
+        });
+      }
     }
 
     // CEK FORMAT URL GAMBAR SEBELUM DIMUAT
@@ -774,6 +833,9 @@
           pilArea.innerHTML += `<div class="sim-opt flex items-start gap-3 p-3.5 rounded-xl border ${isKunci ? 'bg-emerald-50 border-emerald-500' : 'bg-white border-slate-200'}"><div class="w-8 h-8 rounded-lg flex items-center justify-center font-extrabold text-sm flex-shrink-0 ${isKunci ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}">${h}</div><div class="flex-1 text-sm font-medium pt-1">${formatKontenSoal(s.pilihan[h], false)}</div>${isKunci ? '<span class="text-[11px] font-extrabold text-emerald-700 bg-emerald-100 px-2 py-1 rounded-lg">Kunci</span>' : ''}</div>`;
         });
       }
+
+      // Render seluruh ekspresi matematika & matriks LaTeX di layar pratinjau guru
+      renderRumusKaTeX(document.getElementById('simCardBody'));
 
       document.getElementById('btnPrev').disabled = state.currentIndex === 0;
       document.getElementById('btnNext').disabled = state.currentIndex === state.soalList.length - 1;
