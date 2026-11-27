@@ -509,24 +509,32 @@
       }
     }
 
-    // CEK FORMAT URL GAMBAR SEBELUM DIMUAT
+    // KONVERTER OTOMATIS LINK GOOGLE DRIVE & VALIDASI URL GAMBAR
+    function normalisasiUrlGambar(url) {
+      if (!url) return "";
+      let clean = url.toString().trim();
+      const matchDrive = clean.match(/(?:drive\.google\.com\/(?:file\/d\/|open\?id=|uc\?.*id=|thumbnail\?.*id=)|docs\.google\.com\/.*\/d\/)([a-zA-Z0-9_-]{15,})/);
+      if (matchDrive && matchDrive[1]) {
+        return `https://lh3.googleusercontent.com/d/${matchDrive[1]}`;
+      }
+      return clean;
+    }
+
     function cekFormatLinkGambar(url) {
       const clean = (url || "").trim();
-      if (!clean) return { ada: false, validUrl: false, pesanError: "" };
+      if (!clean) return { ada: false, validUrl: false, resolvedUrl: "", pesanError: "" };
       if (!/^https?:\/\/.+/i.test(clean)) {
-        return { ada: true, validUrl: false, pesanError: "Link gambar harus diawali http:// atau https://." };
-      }
-      if (/drive\.google\.com\/file\/d\//i.test(clean) && !/uc\?export=view|thumbnail\?/i.test(clean)) {
-        return { ada: true, validUrl: false, pesanError: "Link menggunakan URL halaman Google Drive (/view), bukan link gambar langsung sehingga gambar tidak terbaca di CBT." };
+        return { ada: true, validUrl: false, resolvedUrl: "", pesanError: "Link gambar harus diawali http:// atau https://." };
       }
       if (/ibb\.co\/(?!i\.)/i.test(clean)) {
-        return { ada: true, validUrl: false, pesanError: "Link mengarah ke halaman galeri ImgBB (bukan Direct Image Link i.ibb.co). Gambar berisiko tidak terbaca." };
+        return { ada: true, validUrl: false, resolvedUrl: "", pesanError: "Link mengarah ke halaman galeri ImgBB (bukan Direct Image Link i.ibb.co). Gambar berisiko tidak terbaca." };
       }
-      return { ada: true, validUrl: true, pesanError: "" };
+      const resolved = normalisasiUrlGambar(clean);
+      return { ada: true, validUrl: true, resolvedUrl: resolved, pesanError: "" };
     }
 
     // PROBE GAMBAR DI LATAR BELAKANG AGAR LANGSUNG TERDETEKSI DI DASHBOARD GURU
-    function probeGambarAsync(url, timeoutMs = 6000) {
+    function probeGambarAsync(url, timeoutMs = 7000) {
       return new Promise((resolve) => {
         const img = new Image();
         let selesai = false;
@@ -548,10 +556,17 @@
         };
 
         img.onerror = () => {
+          // Jika link Drive gagal di lh3, coba fallback ke endpoint thumbnail Drive sebelum menyatakan error
+          const matchDriveId = url.match(/lh3\.googleusercontent\.com\/d\/([a-zA-Z0-9_-]{15,})/);
+          if (matchDriveId && !img.dataset.retried) {
+            img.dataset.retried = "1";
+            img.src = `https://drive.google.com/thumbnail?id=${matchDriveId[1]}&sz=w1000`;
+            return;
+          }
           if (!selesai) {
             selesai = true;
             clearTimeout(timer);
-            resolve({ ok: false, alasan: "Gambar gagal dimuat / link tidak terbaca (404, akses diblokir, atau bukan file gambar langsung)." });
+            resolve({ ok: false, alasan: "Gambar gagal dimuat (pastikan izin Google Drive disetel ke 'Siapa saja yang memiliki link / Anyone with the link', atau cek apakah link rusak 404)." });
           }
         };
 
@@ -648,11 +663,11 @@
       state.auditResults = state.soalList.map(s => auditSatuSoal(s, null));
       refreshSemuaTampilanAudit();
 
-      // Uji pemuatan gambar untuk setiap soal yang memiliki link valid
+      // Uji pemuatan gambar menggunakan URL yang sudah dinormalisasi (termasuk Google Drive)
       const tasks = state.soalList.map(async (s, idx) => {
         const cekLink = cekFormatLinkGambar(s.gambar);
         if (cekLink.ada && cekLink.validUrl) {
-          const probe = await probeGambarAsync(s.gambar.trim());
+          const probe = await probeGambarAsync(cekLink.resolvedUrl);
           state.auditResults[idx] = auditSatuSoal(s, probe);
         }
       });
@@ -790,7 +805,15 @@
         } else {
           imgAlert.classList.add('hidden');
           imgEl.classList.remove('hidden');
-          imgEl.src = s.gambar.trim();
+          imgEl.dataset.retry = "";
+          const matchDriveId = s.gambar.match(/(?:file\/d\/|id=|\/d\/)([a-zA-Z0-9_-]{15,})/);
+          imgEl.onerror = function() {
+            if (matchDriveId && !this.dataset.retry) {
+              this.dataset.retry = "1";
+              this.src = `https://drive.google.com/thumbnail?id=${matchDriveId[1]}&sz=w1000`;
+            }
+          };
+          imgEl.src = cekLink.resolvedUrl;
         }
       } else {
         imgWrap.classList.add('hidden');
